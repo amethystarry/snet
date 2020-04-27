@@ -1,6 +1,7 @@
 ﻿using NUnit.Framework;
 using System;
 using Snet;
+using System.Threading;
 
 namespace SnetTest
 {
@@ -39,6 +40,29 @@ namespace SnetTest
 			}
 
 			stream.Close ();
+		}
+
+		[Test()]
+		public void Test_Websocket()
+		{
+			var stream = new SnetStream (1024, false);
+
+			stream.Connect ("101.133.195.232", 8000);
+			//stream.Connect ("127.0.0.1", 8000);
+			stream.Close ();
+			Thread.Sleep (1000);
+			stream.Connect ("101.133.195.232", 8000);
+			stream.Close ();
+			Thread.Sleep (1000);
+			stream.Connect ("101.133.195.232", 8000);
+			stream.Close ();
+			Thread.Sleep (1000);
+			stream.Connect ("101.133.195.232", 8000);
+			stream.Close ();
+			Thread.Sleep (1000);
+			stream.Connect ("101.133.195.232", 8000);
+			stream.Close ();
+
 		}
 
 		[Test()]

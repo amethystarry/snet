@@ -67,6 +67,41 @@ func RandBytes(n int) []byte {
 	return b
 }
 
+func TestWebSocketServer(t *testing.T) {
+	config := Config{
+		EnableCrypt:        false,
+		HandshakeTimeout:   time.Second * 5,
+		RewriterBufferSize: 1024,
+		ReconnWaitTimeout:  time.Minute * 5,
+	}
+	listener, err := Listen(config, func() (net.Listener, error) {
+		l, err := net.Listen("tcp", "0.0.0.0:8000")
+		if err != nil {
+			return nil, err
+		}
+		return l, nil
+	})
+	if err != nil {
+		t.Fatalf("listen failed: %s", err.Error())
+		return
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Fatalf("accept failed: %s", err.Error())
+			return
+		}
+		//握手成功，成功建立连接
+		println("accept success")
+		//关闭连接
+		conn.Close()
+		t.Log("copy exit")
+	}
+}
+
+
 func ConnTest(t *testing.T, unstable, encrypt, reconn bool) {
 	config := Config{
 		EnableCrypt:        encrypt,

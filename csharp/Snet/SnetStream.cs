@@ -4,6 +4,10 @@ using System.Threading;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Linq;
+using System.Collections.Generic;
+using System.Text.RegularExpressions;
+using System.Text;
 
 namespace Snet
 {
@@ -149,13 +153,138 @@ namespace Snet
 
 		public void Connect(string host, int port)
 		{
-			if (_BaseStream != null)
-				throw new InvalidOperationException ();
+			//if (_BaseStream != null)
+			//	throw new InvalidOperationException ();
 
 			_Host = Dns.GetHostAddresses (host)[0];
 			_Port = port;
-			handshake ();
+			websoketHandshake ();
 		}
+
+		string cookie = null;
+		//websocket协议握手，模拟HTTP协议头，让SLB识别
+		public void websoketHandshake ()
+		{
+			TcpClient client = new TcpClient (_Host.AddressFamily);
+			var ar = client.BeginConnect (_Host, _Port, null, null);
+			ar.AsyncWaitHandle.WaitOne (new TimeSpan (0, 0, 0, 0, ConnectTimeout));
+			if (!ar.IsCompleted) {
+				throw new TimeoutException ();
+			}
+			client.EndConnect (ar);
+
+			setBaseStream (client.GetStream ());
+
+			//TODO：随机生成一个Key
+			string key = "RwbLA11o4ElW0njyoFgAdw ==";
+
+			StringBuilder strbuild = new StringBuilder ();
+			//模拟HTTPRequest
+			strbuild.Append ("GET / HTTP/1.1\r\n");
+			strbuild.Append ("Connection: Upgrade\r\n");
+			strbuild.Append ("Host: " + _Host + ":" + _Port + "\r\n");
+			strbuild.Append ("Sec - WebSocket - Key: " + key + "\r\n");
+			strbuild.Append ("Upgrade: websocket\r\n");
+			strbuild.Append ("Sec-WebSocket-Version: 13\r\n");
+			//TODO：如果有Cookie，加上Cookie
+			if (cookie != null) {
+				strbuild.Append ("Cookie:" + cookie + "\r\n");
+			}
+			strbuild.Append ("\r\n");
+
+			byte [] byteArray = System.Text.Encoding.ASCII.GetBytes (strbuild.ToString());
+			_BaseStream.Write (byteArray, 0, byteArray.Length);
+			byte [] response = new byte[300];
+			//读取服务器返回的HTTPResponse
+			int responseLen = _BaseStream.Read (response, 0, 300);
+			response = response.Take (responseLen).ToArray();
+			String responseStr = System.Text.Encoding.ASCII.GetString (response);
+			Dictionary<string, string> headers = parseHeaders (responseStr);
+			//TODO:验证sec -websocket -accept()
+			//保存cookie
+			if(headers.ContainsKey("Set-Cookie")) {
+				cookie = headers["Set-Cookie"];
+			}
+			Console.WriteLine (responseStr);
+			Console.WriteLine ("receive cookie:" + cookie);
+			//二次握手
+			secondHandshake ();
+		}
+
+		//拆分headers
+		private Dictionary<string, string> parseHeaders (string response)
+		{
+			string[] headerstrs = Regex.Split (response, "\r\n");
+			Dictionary<string, string> headers = new Dictionary<string, string> ();
+			foreach (string headerstr in headerstrs) {
+				string [] words = headerstr.Split (':');
+				if(words.Length == 2) {
+					headers.Add (words [0].Trim (), words [1].Trim ());
+				}
+			}
+			return headers;
+		}
+
+		private void secondHandshake ()
+		{
+			byte [] preRequest = new byte [1];
+			byte [] request = new byte [24];
+			byte [] response = request;
+
+			preRequest [0] = TypeNewconn;
+
+			ulong privateKey;
+			ulong publicKey;
+			DH64 dh64 = new DH64 ();
+			dh64.KeyPair (out privateKey, out publicKey);
+
+			using (MemoryStream ms = new MemoryStream (request, 0, 8)) {
+				using (BinaryWriter w = new BinaryWriter (ms)) {
+					w.Write (publicKey);
+				}
+			}
+			_BaseStream.Write (preRequest, 0, preRequest.Length);
+			_BaseStream.Write (request, 0, 8);
+
+			for (int n = 24; n > 0;) {
+				int x = _BaseStream.Read (response, 24 - n, n);
+				if (x == 0)
+					throw new EndOfStreamException ();
+				n -= x;
+			}
+
+			ulong challengeCode = 0;
+			using (MemoryStream ms = new MemoryStream (response, 0, 24)) {
+				using (BinaryReader r = new BinaryReader (ms)) {
+					ulong serverPublicKey = r.ReadUInt64 ();
+					ulong secret = dh64.Secret (privateKey, serverPublicKey);
+
+					using (MemoryStream ms2 = new MemoryStream (_Key)) {
+						using (BinaryWriter w = new BinaryWriter (ms2)) {
+							w.Write (secret);
+						}
+					}
+
+					_ReadCipher = new RC4Cipher (_Key);
+					_WriteCipher = new RC4Cipher (_Key);
+					_ReadCipher.XORKeyStream (response, 8, response, 8, 8);
+
+					_ID = r.ReadUInt64 ();
+
+					using (MemoryStream ms2 = new MemoryStream (request, 0, 16)) {
+						using (BinaryWriter w = new BinaryWriter (ms2)) {
+							w.Write (response, 16, 8);
+							w.Write (_Key);
+							MD5 md5 = MD5CryptoServiceProvider.Create ();
+							byte [] hash = md5.ComputeHash (request, 0, 16);
+							Buffer.BlockCopy (hash, 0, request, 0, hash.Length);
+							_BaseStream.Write (request, 0, 16);
+						}
+					}
+				}
+			}
+		}
+
 
 		private void handshake()
 		{

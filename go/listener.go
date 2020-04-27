@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"crypto/md5"
 	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/binary"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -80,9 +83,59 @@ func (l *Listener) acceptLoop() {
 			}
 			break
 		}
-		go l.handAccept(conn)
+		go l.handWsAccept(conn)
 	}
 }
+
+func parseHandshake(content string) map[string]string {
+	headers := make(map[string]string, 10)
+	lines := strings.Split(content, "\r\n")
+
+	for _,line := range lines {
+		if len(line) >= 0 {
+			words := strings.Split(line, ":")
+			if len(words) == 2 {
+				headers[strings.Trim(words[0]," ")] = strings.Trim(words[1], " ")
+			}
+		}
+	}
+	return headers
+}
+
+//使用WS协议，先经过一层WS协议握手，再进入之前的TCP二次握手
+func (l *Listener) handWsAccept(conn net.Conn) {
+	content := make([] byte, 1024)
+	if _, err := conn.Read(content); err != nil {
+		l.trace("accept connect, content:", string(content))
+	}
+	isHttp := false
+	if string(content[0:3]) == "GET" {
+		isHttp = true
+	}
+	if isHttp{
+		headers := parseHandshake(string(content))
+		secWebsocketKey := headers["Sec-WebSocket-Key"]
+		// GUID 用于使用传输协议内的安全校验
+		guid := "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+		h := sha1.New()
+		io.WriteString(h, secWebsocketKey + guid)
+		accept := make([]byte, 28)
+		base64.StdEncoding.Encode(accept, h.Sum(nil))
+		l.trace("acceptcode:" + string(accept))
+		response := "HTTP/1.1 101 Switching Protocols\r\n"
+		response = response + "Sec-WebSocket-Accept: " + string(accept) + "\r\n"
+		response = response + "Connection: Upgrade\r\n"
+		response = response + "Upgrade: websocket\r\n\r\n"
+
+		if _, err := conn.Write([]byte(response)); err != nil {
+			l.trace(err.Error())
+		}
+		l.handAccept(conn)
+	} else {
+		l.trace("not http content")
+	}
+}
+
 
 func (l *Listener) handAccept(conn net.Conn) {
 	var buf [1]byte
@@ -247,3 +300,4 @@ func (l *Listener) delConn(id uint64) {
 		delete(l.conns, id)
 	}
 }
+
